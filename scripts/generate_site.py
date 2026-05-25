@@ -169,7 +169,7 @@ async function loadFile(fw, filename) {{
   document.getElementById('breadcrumb').innerHTML =
     `<span>${{escapeHtml(fw)}}</span> / ${{escapeHtml(filename)}}`;
 
-  const path = `${{fw}}/${{filename}}`;
+  const path = `${{INDEX.paths[fw]}}/${{filename}}`;
   let text;
   try {{
     const resp = await fetch(path);
@@ -206,14 +206,22 @@ window.addEventListener('hashchange', parseHash);
 """
 
 
+def _is_bucket_dir(name: str) -> bool:
+    return len(name) == 1 and (name.isupper() or name == "_")
+
+
 def build_index(headers_dir: Path) -> dict:
+    """Return {fw_name: {"bucket": "A", "files": [...]}, ...} from bucketed structure."""
     frameworks = {}
-    for framework_dir in sorted(headers_dir.iterdir()):
-        if not framework_dir.is_dir():
+    for bucket_dir in sorted(headers_dir.iterdir()):
+        if not bucket_dir.is_dir() or not _is_bucket_dir(bucket_dir.name):
             continue
-        files = sorted(f.name for f in framework_dir.glob("*.h"))
-        if files:
-            frameworks[framework_dir.name] = files
+        for fw_dir in sorted(bucket_dir.iterdir()):
+            if not fw_dir.is_dir():
+                continue
+            files = sorted(f.name for f in fw_dir.glob("*.h"))
+            if files:
+                frameworks[fw_dir.name] = {"bucket": bucket_dir.name, "files": files}
     return frameworks
 
 
@@ -248,14 +256,15 @@ def main():
     print(f"Scanning headers in: {headers_dir}")
     frameworks = build_index(headers_dir)
     framework_count = len(frameworks)
-    header_count = sum(len(v) for v in frameworks.values())
+    header_count = sum(len(v["files"]) for v in frameworks.values())
     print(f"Found {framework_count} frameworks, {header_count} header files")
 
     index_data = {
         "version": version,
         "build": build,
         "frameworks": list(frameworks.keys()),
-        "files": frameworks,
+        "files": {fw: info["files"] for fw, info in frameworks.items()},
+        "paths": {fw: f"{info['bucket']}/{fw}" for fw, info in frameworks.items()},
     }
 
     html = HTML_TEMPLATE.format(

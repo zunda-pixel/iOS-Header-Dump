@@ -71,11 +71,15 @@ find "$HEADERS_DIR" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/nul
 
 ipsw class-dump --all --headers -o "$HEADERS_DIR" "$DSC_PATH" 2>&1 | grep -v "^$"
 
+# フレームワークを先頭文字ごとのバケットに整理
+echo "Reorganizing into letter buckets..."
+python3 "$(dirname "$0")/reorganize.py" "$HEADERS_DIR"
+
 # バージョン情報を記録
 echo "$VERSION ($BUILD)" > "$HEADERS_DIR/version.txt"
 
 HEADER_COUNT=$(find "$HEADERS_DIR" -name "*.h" | wc -l | tr -d ' ')
-FRAMEWORK_COUNT=$(find "$HEADERS_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+FRAMEWORK_COUNT=$(find "$HEADERS_DIR" -mindepth 2 -maxdepth 2 -type d | wc -l | tr -d ' ')
 
 echo ""
 echo "=== Done ==="
