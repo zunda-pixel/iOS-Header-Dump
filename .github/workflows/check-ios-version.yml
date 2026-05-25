@@ -1,0 +1,124 @@
+name: Check for new iOS version
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 毎日 8:00 UTC (17:00 JST)
+  workflow_dispatch:
+
+env:
+  DEVICE: iPhone18,3  # 追跡するデバイス識別子
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest signed firmware
+        id: latest
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess, sys
+
+          device = os.environ['DEVICE']
+          result = subprocess.run(
+              ['curl', '-sf', f'https://api.ipsw.me/v4/device/{device}'],
+              capture_output=True, text=True, check=True
+          )
+          info = json.loads(result.stdout)
+          signed = [f for f in info['firmwares'] if f['signed']]
+          signed.sort(key=lambda f: f['releasedate'], reverse=True)
+          if not signed:
+              print('No signed firmware found', file=sys.stderr)
+              sys.exit(1)
+
+          fw = signed[0]
+          size_gb = fw['filesize'] / 1024**3
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"version={fw['version']}\n")
+              out.write(f"build={fw['buildid']}\n")
+              out.write(f"url={fw['url']}\n")
+              out.write(f"size_gb={size_gb:.1f}\n")
+          print(f"Latest: iOS {fw['version']} ({fw['buildid']})")
+          EOF
+
+      - name: Read current committed version
+        id: current
+        run: |
+          CURRENT=$(cat headers/version.txt 2>/dev/null || echo "none")
+          echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current: $CURRENT"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          LATEST="iOS ${{ steps.latest.outputs.version }} (${{ steps.latest.outputs.build }})"
+          CURRENT="${{ steps.current.outputs.version }}"
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "Already up-to-date: $CURRENT"
+          else
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "New version available: $LATEST (current: $CURRENT)"
+          fi
+
+      - name: Check for existing open issue
+        id: existing_issue
+        if: steps.compare.outputs.needs_update == 'true'
+        run: |
+          TITLE="iOS ${{ steps.latest.outputs.version }} (${{ steps.latest.outputs.build }}) available"
+          NUMBER=$(gh issue list \
+            --label "new-ios-version" \
+            --state open \
+            --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          echo "number=$NUMBER" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create issue for new iOS version
+        if: >
+          steps.compare.outputs.needs_update == 'true' &&
+          steps.existing_issue.outputs.number == ''
+        run: |
+          TITLE="iOS ${{ steps.latest.outputs.version }} (${{ steps.latest.outputs.build }}) available"
+          gh issue create \
+            --title "$TITLE" \
+            --label "new-ios-version" \
+            --body "$(cat <<'BODY'
+          ## 新しい iOS バージョンが検出されました
+
+          | | |
+          |---|---|
+          | **Version** | iOS ${{ steps.latest.outputs.version }} |
+          | **Build** | ${{ steps.latest.outputs.build }} |
+          | **Device** | ${{ env.DEVICE }} |
+          | **IPSW Size** | ~${{ steps.latest.outputs.size_gb }} GB |
+          | **Current** | ${{ steps.current.outputs.version }} |
+
+          ## 手順
+
+          セルフホストランナー（Mac）が起動していることを確認してから実行：
+
+          **GitHub UI から:**
+          [Actions → Dump iOS Headers → Run workflow](${{ github.server_url }}/${{ github.repository }}/actions/workflows/dump-headers.yml)
+
+          入力値:
+          - `device`: `${{ env.DEVICE }}`
+          - `build`: `${{ steps.latest.outputs.build }}`
+
+          **CLI から:**
+          ```bash
+          gh workflow run dump-headers.yml \
+            -f device=${{ env.DEVICE }} \
+            -f build=${{ steps.latest.outputs.build }}
+          ```
+          BODY
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
